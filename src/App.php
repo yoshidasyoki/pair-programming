@@ -1,0 +1,201 @@
+<?php
+
+// require_onceで必要なクラスを読み込むこと
+require_once 'app/Router.php';
+require_once 'app/View.php';
+require_once 'app/DatabaseConnector.php';
+require_once 'app/Middlewares/AuthMiddleware.php';
+
+require_once 'app/Controllers/ArticlesController.php';
+require_once 'app/Controllers/AuthController.php';
+require_once 'app/Controllers/UsersController.php';
+require_once 'app/Controllers/TagsController.php';
+require_once 'app/Controllers/TestController.php';
+require_once 'app/Controllers/VVTagsController.php';
+
+class App
+{
+    private Router $routes;
+    private View $view;
+    private DatabaseConnector $databaseConnector;
+
+    public function __construct()
+    {
+        $this->routes = new Router($this->registerRoutes());
+        $this->view = new View(__DIR__ . '/resources/views');
+    }
+
+    public function run(): void
+    {
+        try {
+            session_start();
+            $this->databaseConnector = new DatabaseConnector([
+                'hostname' => 'db',     // DockerのDBコンテナ名
+                'database' => 'team_dev',
+                'username' => 'team_user',
+                'password' => 'pass',
+            ]);
+
+            // リクエストURIを取得してルーティングを行う
+            $accessPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+            $route = $this->routes->getRoute($accessPath);
+
+            // 認証状態に応じてアクセスできるページを制御
+            if ($route['middleware'] === 'auth') {
+                AuthMiddleware::auth('/login');
+            } elseif ($route['middleware'] === 'guest') {
+                AuthMiddleware::guest('/');
+            }
+
+            // ルーティングで指定したロジック処理を実行
+            $controllerName = $route['controller'];
+            $actionName = $route['action'];
+            $response = $this->runAction($controllerName, $actionName);
+            $response->send();
+        } catch (HttpNotFoundException) {
+            $content = $this->view->render('/errors/404page.php');
+            $response = Response::html($content, 404);
+            $response->send();
+        } catch (MethodNotAllowedException) {
+            $content = $this->view->render('/errors/405page.php');
+            $response = Response::html($content, 405);
+            $response->send();
+        }
+    }
+
+    // ルーティングの設定（ここでどのパスが来たらどのコントローラーのどのアクションを実行するかを指定する）
+    private function registerRoutes(): array
+    {
+        // 認証済み状態でないとアクセスできないリソースを設定
+        $authRoute = [
+            '/' => [
+                'method' => 'GET',
+                'controller' => 'ArticlesController',
+                'action' => 'index'
+            ],
+            '/articles/detail' => [
+                'method' => 'GET',
+                'controller' => 'ArticlesController',
+                'action' => 'show',
+            ],
+            '/articles/edit' => [
+                'method' => 'GET',
+                'controller' => 'ArticlesController',
+                'action' => 'edit',
+            ],
+            '/articles/update' => [
+                'method' => 'POST',
+                'controller' => 'ArticlesController',
+                'action' => 'update',
+            ],
+            '/articles/delete' => [
+                'method' => 'POST',
+                'controller' => 'ArticlesController',
+                'action' => 'delete'
+            ],
+            '/articles/likes' => [
+                'method' => 'POST',
+                'controller' => 'ArticlesController',
+                'action' => 'likesCount',
+            ],
+            '/mypage' => [
+                'method' => 'GET',
+                'controller' => 'UsersController',
+                'action' => 'index'
+            ],
+            '/tags' => [
+                'method' => 'GET',
+                'controller' => 'TagsController',
+                'action' => 'index',
+            ],
+            '/tags/store' => [
+                'method' => 'POST',
+                'controller' => 'TagsController',
+                'action' => 'store',
+            ],
+            '/logout' => [
+                'method' => 'POST',
+                'controller' => 'AuthController',
+                'action' => 'logout'
+            ],
+            // 新規記事作成ページ遷移
+            '/articles/create' => [
+                'method' => 'GET',
+                'controller' => 'ArticlesController',
+                'action' => 'showCreate'
+            ],
+            '/articles/store' => [
+                'method' => 'POST',
+                'controller' => 'ArticlesController',
+                'action' => 'store'
+            ],
+        ];
+
+        // 未認証状態でないとアクセスできないリソースを設定
+        $guestRoute = [
+            '/login' => [
+                'method' => 'GET',
+                'controller' => 'AuthController',
+                'action' => 'index'
+            ],
+            '/login/auth' => [
+                'method' => 'POST',
+                'controller' => 'AuthController',
+                'action' => 'auth'
+            ],
+            '/users/create' => [
+                'method' => 'GET',
+                'controller' => 'UsersController',
+                'action' => 'create',
+            ],
+            '/users/store' => [
+                'method' => 'POST',
+                'controller' => 'UsersController',
+                'action' => 'store',
+            ],
+        ];
+
+        // 認証状態に関わらずアクセスできるリソースを設定
+        $normalRoute = [
+            '/test' => [
+                'method' => 'GET',
+                'controller' => 'TestController',
+                'action' => 'test'
+            ],
+            '/v2/tags/create' => [
+                'method' => 'GET',
+                'controller' => 'VVTagsController',
+                'action' => 'create',
+            ],
+            '/v2/tags/store' => [
+                'method' => 'POST',
+                'controller' => 'VVTagsController',
+                'action' => 'store',
+            ],
+        ];
+
+        return [
+            'auth' => [...$authRoute],
+            'guest' => [...$guestRoute],
+            'normal' => [...$normalRoute],
+        ];
+    }
+
+    // ここから以下はアプリの基礎動作に関わるメソッドを定義
+    // （アプリ開発時はいじらなくてOK）
+    private function runAction(string $controllerName, string $actionName): Response
+    {
+        $controller = new $controllerName($this);
+        return $controller->$actionName();
+    }
+
+    public function getDatabaseConnector(): DatabaseConnector
+    {
+        return $this->databaseConnector;
+    }
+
+    public function getView(): View
+    {
+        return $this->view;
+    }
+}
